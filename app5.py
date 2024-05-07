@@ -31,27 +31,34 @@ from langchain.chains import LLMChain
 from langchain.chains import SequentialChain, TransformChain
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnableParallel, RunnablePassthrough
+import argparse
 
+parser = argparse.ArgumentParser(description='AI LLM parser.')
+parser.add_argument('--question', type=str, help='Ask a question or send a command to LLM')
+args = parser.parse_args()
+#print(args.question)
 HUBITAT_TOKEN = os.getenv("HUBITAT_TOKEN")
 
-# chain = (
-#     PromptTemplate.from_template(
-#         """Given the user question below, classify it as either being about `home automation`, or `Other`.
+# Decide whether to home automation chain or agent
+chain = (
+    PromptTemplate.from_template(
+        """Given the user question below, classify it as either being about `home automation`, or `Other`.
 
-# Do not respond with anything other than the 2 options specified.
+Do NOT respond with anything other than the 2 options specified.  Do NOT respond with how the Classification was selected.
 
-# <question>
-# {question}
-# </question>
+<question>
+{question}
+</question>
 
-# Classification:"""
-#     )
+Classification:"""
+    )
 
-#     | ChatOllama(model="mistral")
-#     | StrOutputParser()
-# )
+    | ChatOllama(model="mistral")
+    | StrOutputParser()
+)
 
-#chain.invoke({"question": "how do I call Anthropic?"})
+chain_result = chain.invoke({"question": f"{args.question}"})
+#print(chain_result)
 
 DEVICE_LOOKUP_TEMPLATE_TEXT = """
 Parse the device JSON data to determine which device the user is asking about in the Question.
@@ -102,17 +109,7 @@ response = requests.request("get", "http://192.168.2.9/apps/api/106/devices", pa
 
 def transform_func(inputs: dict) -> dict:
     """
-    Extracts specific sections from a given text based on newline separators.
-
-    The function assumes the input text is divided into sections or paragraphs separated
-    by one newline characters (`\n`). It extracts the sections from index 922 to 950
-    (inclusive) and returns them in a dictionary.
-
-    Parameters:
-    - inputs (dict): A dictionary containing the key "text" with the input text as its value.
-
-    Returns:
-    - dict: A dictionary containing the key "output_text" with the extracted sections as its value.
+    Take the specified dictionary which contains a device or list of devices and get more specific details
     """
     print(f"the inputs: {inputs['updatedcontext']}")
     clean_inputs = eval(inputs['updatedcontext'].strip(" "))
@@ -126,17 +123,7 @@ def transform_func(inputs: dict) -> dict:
 
 def transform_output(inputs: dict) -> dict:
     """
-    Extracts specific sections from a given text based on newline separators.
-
-    The function assumes the input text is divided into sections or paragraphs separated
-    by one newline characters (`\n`). It extracts the sections from index 922 to 950
-    (inclusive) and returns them in a dictionary.
-
-    Parameters:
-    - inputs (dict): A dictionary containing the key "text" with the input text as its value.
-
-    Returns:
-    - dict: A dictionary containing the key "output_text" with the extracted sections as its value.
+    Take the specified dictionary and execute a command or return device details
     """
     " [{'id': 116, 'command': 'off'}]"
     #print(f"the inputs: {inputs['answer']}")
@@ -167,7 +154,7 @@ def transform_output(inputs: dict) -> dict:
 DEVICE_LOOKUP_template = PromptTemplate(input_variables=["input", "context"], template=DEVICE_LOOKUP_TEMPLATE_TEXT)
 DETERMINE_COMMAND_template = PromptTemplate(input_variables=["input", "output_text"], template=DETERMINE_COMMAND_TEMPLATE_TEXT)
 
-# Create the chains.
+# Create the chains - Device action and Device status
 device_lookup_chain = LLMChain(llm=llm, prompt=DEVICE_LOOKUP_template, output_key="updatedcontext", verbose=True, output_parser=StrOutputParser())
 determine_command_chain = LLMChain(llm=llm, prompt=DETERMINE_COMMAND_template, output_key="answer", verbose=True, output_parser=StrOutputParser())
 transform_chain = TransformChain(
@@ -177,13 +164,27 @@ output_chain = TransformChain(
     input_variables=["answer"], output_variables=["answernew"], transform=transform_output, verbose=True
 )
 
-#transform_chain.run(meditations)
+
+# # Create the chains - Historical
+# device_lookup_chain = LLMChain(llm=llm, prompt=DEVICE_LOOKUP_template, output_key="updatedcontext", verbose=True, output_parser=StrOutputParser())
+# determine_command_chain = LLMChain(llm=llm, prompt=DETERMINE_COMMAND_template, output_key="answer", verbose=True, output_parser=StrOutputParser())
+# transform_chain = TransformChain(
+#     input_variables=["updatedcontext"], output_variables=["output_text"], transform=transform_func, verbose=True
+# )
+# output_chain = TransformChain(
+#     input_variables=["answer"], output_variables=["answernew"], transform=transform_output, verbose=True
+# )
+influx_token = os.getenv("INFLUX_TOKEN")
+headers = {'Accept': 'applicaton/csv', 'Content-type': 'application/vnd.flux', 'Authorization': f'Token {influx_token}'}
+data = '''from(bucket: "Hubitat")
+    |> range(start: -60m)
+    |> filter(fn: (r) => r["_measurement"] == "contact")
+    |> filter(fn: (r) => r["_field"] == "valueBinary")'''
+influxdb_data = requests.request("POST", "http://192.168.2.184:8086/api/v2/query?org=Hubitat", headers=headers, data=data)
+
 
 
 # Join them into a sequential chain.
-# overall_chain = SimpleSequentialChain(
-#     chains=[device_lookup_chain, determine_command_chain], verbose=True
-# )
 overall_chain = SequentialChain(
     chains=[device_lookup_chain, transform_chain, determine_command_chain, output_chain],
     input_variables=["input", "context"],
@@ -195,9 +196,31 @@ overall_chain = SequentialChain(
 
 all_devices = response.json()
 
-overall_chain.invoke({"input":"if the kitchen lights are on, turn them off", "context": all_devices})
-#overall_chain.invoke({"input":"if the kitchen lights are off, turn them on", "context": all_devices})
-#overall_chain.invoke({"input":"are the kitchen lights on or off?", "context": all_devices})
-#overall_chain.invoke({"input":"what is the status of the upstairs thermostat?", "context": all_devices})
-#overall_chain.invoke({"input":"what mode is the downstairs thermostat set to?", "context": all_devices})
-#overall_chain.invoke({"input":"set the downstairs hallway lights to 100%", "context": all_devices})
+if chain_result == " home automation.":
+    overall_chain_result = overall_chain.invoke({"input":f"{args.question}", "context": all_devices})
+    #overall_chain.invoke({"input":"if the kitchen lights are off, turn them on", "context": all_devices})
+    #overall_chain.invoke({"input":"are the kitchen lights on or off?", "context": all_devices})
+    #overall_chain.invoke({"input":"what is the status of the upstairs thermostat?", "context": all_devices})
+    #overall_chain.invoke({"input":"what mode is the downstairs thermostat set to?", "context": all_devices})
+    #overall_chain.invoke({"input":"set the downstairs hallway lights to 100%", "context": all_devices})
+    print(overall_chain_result)
+else:
+    # Decide whether to home automation chain or agent
+    chain = (
+        PromptTemplate.from_template(
+            """You are a helpful assistant, answer the question to the best of your ability.
+        <question>
+        {question}
+        </question>
+
+        Answer:"""
+        )
+        | ChatOllama(model="mistral")
+        | StrOutputParser()
+    )
+
+    chain_result = chain.invoke({"question": f"{args.question}"})
+    print(chain_result)
+
+
+
