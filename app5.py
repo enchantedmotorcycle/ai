@@ -42,9 +42,9 @@ HUBITAT_TOKEN = os.getenv("HUBITAT_TOKEN")
 # Decide whether to home automation chain or agent
 chain = (
     PromptTemplate.from_template(
-        """Given the user question below, classify it as either being about `home automation`, or `Other`.
+        """Given the user question below, classify it as either being about `home automation command`, `home automation past data`, or `Other`.
 
-Do NOT respond with anything other than the 2 options specified.  Do NOT respond with how the Classification was selected.
+Do NOT respond with anything other than the 3 options specified.  Do NOT respond with how the Classification was selected.
 
 <question>
 {question}
@@ -58,7 +58,7 @@ Classification:"""
 )
 
 chain_result = chain.invoke({"question": f"{args.question}"})
-#print(chain_result)
+print(chain_result)
 
 DEVICE_LOOKUP_TEMPLATE_TEXT = """
 Parse the device JSON data to determine which device the user is asking about in the Question.
@@ -67,6 +67,33 @@ Devices:
 {context}
 
 Respond only with the Device ID or IDs in a Python list form.  Ex. [12, 4] or Ex. [6]
+
+Question: {input}
+Answer:
+"""
+
+HISTORICAL_CONTEXT_TEMPLATE_TEXT = """
+Parse the historical CSV data which contains the context to answer the Question.
+
+Device data:
+{output_text}
+
+
+Question: {input}
+Answer:
+"""
+
+HISTORICAL_DEVICE_LOOKUP_TEMPLATE_TEXT = """
+Determine what type of device or devices the question is asking about.
+Answer with a list of types in Python list form.
+Use type switch for lights.
+Use type contact for windows and doors.
+Use type motion for motion detectors.
+Use type temperature for thermostats.
+
+Ex. ['switch']
+Ex. ['contact', 'switch']
+Ex. ['contact', 'motion']
 
 Question: {input}
 Answer:
@@ -121,6 +148,24 @@ def transform_func(inputs: dict) -> dict:
 
     return {"output_text": response.text}
 
+def transform_historical_func(inputs: dict) -> dict:
+    """
+    Take the specified dictionary which contains a device or list of devices and get more specific details
+    """
+    print(f"the inputs: {inputs['updatedcontext']}")
+    clean_inputs = eval(inputs['updatedcontext'].strip(" "))
+    response_list = []
+    for i in clean_inputs:
+        print(i)
+        influx_token = os.getenv("INFLUX_TOKEN")
+        headers = {'Accept': 'applicaton/csv', 'Content-type': 'application/vnd.flux', 'Authorization': f'Token {influx_token}'}
+        data = f'''from(bucket: "Hubitat")
+            |> range(start: -480m)
+            |> filter(fn: (r) => r["_measurement"] == "{i}")'''
+        response = requests.request("POST", "http://192.168.2.184:8086/api/v2/query?org=Hubitat", headers=headers, data=data)
+        print(response.text)
+    return {"output_text": response.text}
+
 def transform_output(inputs: dict) -> dict:
     """
     Take the specified dictionary and execute a command or return device details
@@ -153,6 +198,8 @@ def transform_output(inputs: dict) -> dict:
 #DEVICE_LOOKUP_template = PromptTemplate.from_template(DEVICE_LOOKUP_TEMPLATE_TEXT)
 DEVICE_LOOKUP_template = PromptTemplate(input_variables=["input", "context"], template=DEVICE_LOOKUP_TEMPLATE_TEXT)
 DETERMINE_COMMAND_template = PromptTemplate(input_variables=["input", "output_text"], template=DETERMINE_COMMAND_TEMPLATE_TEXT)
+HISTORICAL_DEVICE_LOOKUP_TEMPLATE_TEXT_template = PromptTemplate(input_variables=["input"], template=HISTORICAL_DEVICE_LOOKUP_TEMPLATE_TEXT)
+HISTORICAL_CONTEXT_TEMPLATE_TEXT_template = PromptTemplate(input_variables=["input", "output_text"], template=HISTORICAL_CONTEXT_TEMPLATE_TEXT)
 
 # Create the chains - Device action and Device status
 device_lookup_chain = LLMChain(llm=llm, prompt=DEVICE_LOOKUP_template, output_key="updatedcontext", verbose=True, output_parser=StrOutputParser())
@@ -166,21 +213,15 @@ output_chain = TransformChain(
 
 
 # # Create the chains - Historical
-# device_lookup_chain = LLMChain(llm=llm, prompt=DEVICE_LOOKUP_template, output_key="updatedcontext", verbose=True, output_parser=StrOutputParser())
-# determine_command_chain = LLMChain(llm=llm, prompt=DETERMINE_COMMAND_template, output_key="answer", verbose=True, output_parser=StrOutputParser())
-# transform_chain = TransformChain(
-#     input_variables=["updatedcontext"], output_variables=["output_text"], transform=transform_func, verbose=True
-# )
-# output_chain = TransformChain(
+historical_device_lookup_chain = LLMChain(llm=llm, prompt=HISTORICAL_DEVICE_LOOKUP_TEMPLATE_TEXT_template, output_key="updatedcontext", verbose=True, output_parser=StrOutputParser())
+historical_context_chain = LLMChain(llm=llm, prompt=HISTORICAL_CONTEXT_TEMPLATE_TEXT_template, output_key="answer", verbose=True, output_parser=StrOutputParser())
+historical_transform_chain = TransformChain(
+    input_variables=["updatedcontext"], output_variables=["output_text"], transform=transform_historical_func, verbose=True
+)
+# historical_output_chain = TransformChain(
 #     input_variables=["answer"], output_variables=["answernew"], transform=transform_output, verbose=True
 # )
-influx_token = os.getenv("INFLUX_TOKEN")
-headers = {'Accept': 'applicaton/csv', 'Content-type': 'application/vnd.flux', 'Authorization': f'Token {influx_token}'}
-data = '''from(bucket: "Hubitat")
-    |> range(start: -60m)
-    |> filter(fn: (r) => r["_measurement"] == "contact")
-    |> filter(fn: (r) => r["_field"] == "valueBinary")'''
-influxdb_data = requests.request("POST", "http://192.168.2.184:8086/api/v2/query?org=Hubitat", headers=headers, data=data)
+
 
 
 
@@ -194,9 +235,19 @@ overall_chain = SequentialChain(
     verbose=True,
     return_all=True)
 
+# Join them into a historical sequential chain.
+historical_overall_chain = SequentialChain(
+    chains=[historical_device_lookup_chain, historical_transform_chain, historical_context_chain],
+    input_variables=["input"],
+    # Here we return multiple variables
+    #output_variables=["updatedcontext", "answer"],
+    #output_variables=["answernew"],
+    verbose=True,
+    return_all=True)
+
 all_devices = response.json()
 
-if chain_result == " home automation.":
+if chain_result == " home automation command." or chain_result == " home automation command":
     overall_chain_result = overall_chain.invoke({"input":f"{args.question}", "context": all_devices})
     #overall_chain.invoke({"input":"if the kitchen lights are off, turn them on", "context": all_devices})
     #overall_chain.invoke({"input":"are the kitchen lights on or off?", "context": all_devices})
@@ -204,6 +255,14 @@ if chain_result == " home automation.":
     #overall_chain.invoke({"input":"what mode is the downstairs thermostat set to?", "context": all_devices})
     #overall_chain.invoke({"input":"set the downstairs hallway lights to 100%", "context": all_devices})
     print(overall_chain_result)
+elif chain_result == " home automation past data." or chain_result == " home automation past data":
+    historical_overall_chain_result = historical_overall_chain.invoke({"input":f"{args.question}"})
+    #can you tell me about kitchen light usage details from today?
+    #overall_chain.invoke({"input":"are the kitchen lights on or off?", "context": all_devices})
+    #overall_chain.invoke({"input":"what is the status of the upstairs thermostat?", "context": all_devices})
+    #overall_chain.invoke({"input":"what mode is the downstairs thermostat set to?", "context": all_devices})
+    #overall_chain.invoke({"input":"set the downstairs hallway lights to 100%", "context": all_devices})
+    print(historical_overall_chain_result)
 else:
     # Decide whether to home automation chain or agent
     chain = (
@@ -218,7 +277,6 @@ else:
         | ChatOllama(model="mistral")
         | StrOutputParser()
     )
-
     chain_result = chain.invoke({"question": f"{args.question}"})
     print(chain_result)
 
