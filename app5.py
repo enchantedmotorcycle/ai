@@ -74,6 +74,9 @@ Answer:
 
 HISTORICAL_CONTEXT_TEMPLATE_TEXT = """
 Parse the historical CSV data which contains the context to answer the Question.
+Translate the _time timestamps from UTC to PST. Ignore the _start, _stop, _level columns.
+Do NOT respond with any custom scripts or code.  Do NOT respond with how you arrived at the answer.
+Summarize and answer.
 
 Device data:
 {output_text}
@@ -133,7 +136,7 @@ params = {
     'access_token': f'{HUBITAT_TOKEN}'
 }
 response = requests.request("get", "http://192.168.2.9/apps/api/106/devices", params=params)
-
+all_devices = response.json()
 def transform_func(inputs: dict) -> dict:
     """
     Take the specified dictionary which contains a device or list of devices and get more specific details
@@ -159,11 +162,46 @@ def transform_historical_func(inputs: dict) -> dict:
         print(i)
         influx_token = os.getenv("INFLUX_TOKEN")
         headers = {'Accept': 'applicaton/csv', 'Content-type': 'application/vnd.flux', 'Authorization': f'Token {influx_token}'}
-        data = f'''from(bucket: "Hubitat")
-            |> range(start: -480m)
-            |> filter(fn: (r) => r["_measurement"] == "{i}")'''
+        # data = f'''from(bucket: "Hubitat")
+        #     |> range(start: -480m)
+        #     |> filter(fn: (r) => r["_measurement"] == "{i}")'''
+        data = f'''import "experimental"
+        import "influxdata/influxdb/monitor"
+        changes =
+            from(bucket: "Hubitat")
+                |> range(start: -2880m)
+                |> filter(fn: (r) => r["_measurement"] == "{i}")
+                |> filter(fn: (r) => r["deviceId"] == "116")
+                |> filter(fn: (r) => r["_field"] == "value")
+                |> map(fn: (r) => ({{r with _level:
+                if r._value == "on" then "ok"
+                else "warn"
+                }}))
+                |> monitor.stateChangesOnly()
+                |> group()
+                |> sort(columns: ["_time"], desc: false)
+        start =
+            from(bucket: "Hubitat")
+                |> range(start: -2880m)   
+                |> filter(fn: (r) => r["_measurement"] == "{i}")
+                |> filter(fn: (r) => r["deviceId"] == "116")
+                |> filter(fn: (r) => r["_field"] == "value")
+                |> sort(columns: ["_time"], desc: false)
+                |> first()
+        last =
+            from(bucket: "Hubitat")
+                |> range(start: -2880m)   
+                |> filter(fn: (r) => r["_measurement"] == "{i}")
+                |> filter(fn: (r) => r["deviceId"] == "116")
+                |> filter(fn: (r) => r["_field"] == "value")
+                |> sort(columns: ["_time"], desc: false)
+                |> last()
+
+        union(tables: [changes, start, last])
+        |> group()
+        |> sort(columns: ["_time"], desc: false)'''
         response = requests.request("POST", "http://192.168.2.184:8086/api/v2/query?org=Hubitat", headers=headers, data=data)
-        print(response.text)
+        #print(response.text)
     return {"output_text": response.text}
 
 def transform_output(inputs: dict) -> dict:
@@ -245,7 +283,7 @@ historical_overall_chain = SequentialChain(
     verbose=True,
     return_all=True)
 
-all_devices = response.json()
+
 
 if chain_result == " home automation command." or chain_result == " home automation command":
     overall_chain_result = overall_chain.invoke({"input":f"{args.question}", "context": all_devices})
@@ -258,11 +296,13 @@ if chain_result == " home automation command." or chain_result == " home automat
 elif chain_result == " home automation past data." or chain_result == " home automation past data":
     historical_overall_chain_result = historical_overall_chain.invoke({"input":f"{args.question}"})
     #can you tell me about kitchen light usage details from today?
+    #how long have the kitchen lights been on today?
     #overall_chain.invoke({"input":"are the kitchen lights on or off?", "context": all_devices})
     #overall_chain.invoke({"input":"what is the status of the upstairs thermostat?", "context": all_devices})
     #overall_chain.invoke({"input":"what mode is the downstairs thermostat set to?", "context": all_devices})
     #overall_chain.invoke({"input":"set the downstairs hallway lights to 100%", "context": all_devices})
-    print(historical_overall_chain_result)
+    #print(historical_overall_chain_result)
+    print(historical_overall_chain_result['answer'])
 else:
     # Decide whether to home automation chain or agent
     chain = (
@@ -278,7 +318,7 @@ else:
         | StrOutputParser()
     )
     chain_result = chain.invoke({"question": f"{args.question}"})
-    print(chain_result)
+    print(chain_result['answer'])
 
 
 
