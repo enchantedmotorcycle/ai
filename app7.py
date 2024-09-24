@@ -60,15 +60,19 @@ path = "./data"
 file_type = ".json"
 files = []
 for file in os.listdir(path):
-    if file.endswith(file_type):
+    if file.endswith(file_type) and file != "devices.json":
         files.append(file)
+#print(files)
 file_content = []
 this = []
 for i in files:
-    with open(file_path, 'r', encoding='utf-8') as file:
+    with open(path + f"/{i}", 'r', encoding='utf-8') as file:
         content = file.read()
         content = content.replace('null','""')
+        #print(content)
         raw_documents2 = eval(content)
+        #print(type(raw_documents2))
+        #print(raw_documents2)
         this.append(raw_documents2)
 
 
