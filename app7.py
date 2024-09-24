@@ -7,13 +7,33 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_core.prompts import ChatPromptTemplate
 import argparse
-
+import os
+import requests
+import json
 
 parser = argparse.ArgumentParser(description="AI app6")
 
 # Add arguments
 parser.add_argument('--question', type=str, required=True)
 
+HUBITAT_TOKEN = os.getenv("HUBITAT_TOKEN")
+
+params = {
+    'access_token': f'{HUBITAT_TOKEN}'
+}
+
+response = requests.request("get", "http://192.168.2.9/apps/api/106/devices", params=params)
+all_devices = response.json()
+f = open("./data/devices.json", "w")
+f.write(json.dumps(all_devices))
+f.close()
+
+for i in all_devices:
+    response = requests.request("get", f"http://192.168.2.9/apps/api/106/devices/{i['id']}", params=params)
+    device = response.json()
+    f = open(f"./data/device{i['id']}.json", "w")
+    f.write(json.dumps(device))
+    f.close()
 
 # Parse the arguments
 args = parser.parse_args()
@@ -24,17 +44,32 @@ embedding_function = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2"
 # get our list of json objects - fix Nulls
 file_path = "./data/devices.json"
 with open(file_path, 'r', encoding='utf-8') as file:
-        content = file.read()
+    content = file.read()
+    content = content.replace('null','""')
+    #print(content)
 
 raw_documents = eval(content)
 
 # get our list of json objects - fix Nulls
 #file_path = "./data/device116.json"
-file_path = "./data/device340.json"
-with open(file_path, 'r', encoding='utf-8') as file:
-        content = file.read()
+# file_path = "./data/device340.json"
+# with open(file_path, 'r', encoding='utf-8') as file:
+#         content = file.read()
 
-raw_documents2 = eval(content)
+path = "./data"
+file_type = ".json"
+files = []
+for file in os.listdir(path):
+    if file.endswith(file_type):
+        files.append(file)
+file_content = []
+this = []
+for i in files:
+    with open(file_path, 'r', encoding='utf-8') as file:
+        content = file.read()
+        content = content.replace('null','""')
+        raw_documents2 = eval(content)
+        this.append(raw_documents2)
 
 
 # set text and meta data for each json object in the list
@@ -60,12 +95,21 @@ def preprocess_documents_for_chroma(documents):
             attributes = {attr['name']: attr['currentValue'] for attr in doc['attributes'] if isinstance(attr, dict)}
         
         # Flatten capabilities, handle nested attributes
+        # capabilities = []
+        # if isinstance(doc.get('capabilities'), list):
+        #     for cap in doc['capabilities']:
+        #         if isinstance(cap, dict) and 'attributes' in cap :
+        #             capabilities.extend([attr['name'] for attr in cap['attributes'] if isinstance(attr, dict)])
+        #         elif isinstance(cap, str):
+        #             capabilities.append(cap)
         capabilities = []
         if isinstance(doc.get('capabilities'), list):
             for cap in doc['capabilities']:
                 if isinstance(cap, dict) and 'attributes' in cap:
-                    capabilities.extend([attr['name'] for attr in cap['attributes'] if isinstance(attr, dict)])
-                elif isinstance(cap, str):
+                    for attr in cap['attributes']:
+                        if isinstance(attr, dict) and attr['name'] not in ['ledOn', 'ledOff']:
+                            capabilities.append(attr['name'])
+                elif isinstance(cap, str) and cap not in ['ledOn', 'ledOff']:
                     capabilities.append(cap)
         
         # Create a processed document with flattened and serialized fields
@@ -106,8 +150,7 @@ def format_for_chroma(processed_documents):
 
 #print(raw_documents2)
 #print(f"{type(raw_documents2)}")
-this = []
-this.append(raw_documents2)
+
 processed_data = preprocess_documents_for_chroma(this)
 #print(processed_data)
 
