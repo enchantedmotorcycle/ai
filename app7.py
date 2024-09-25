@@ -22,6 +22,8 @@ params = {
     'access_token': f'{HUBITAT_TOKEN}'
 }
 
+output_save = []
+
 response = requests.request("get", "http://192.168.2.9/apps/api/106/devices", params=params)
 all_devices = response.json()
 f = open("./data/devices.json", "w")
@@ -137,8 +139,11 @@ def format_for_chroma(processed_documents):
 
     for doc in processed_documents:
         # Create the text representation
-        text_representation = f"Device {doc.get('name')} ({doc.get('label')}) in {doc.get('room')} is a {doc.get('type')}."
+        #if doc.get(type )
+        #text_representation = f"Device {doc.get('name')} ({doc.get('label')}) with deviceid {doc.get('id')} in {doc.get('room')} is a {doc.get('type')}."
+        text_representation = f"Device {doc.get('label')} with deviceid {doc.get('id')} in {doc.get('room')} is a {doc.get('type')}."
         
+
         # Format the metadata as a JSON string
         metadata_representation = json.dumps(doc)
         
@@ -181,7 +186,8 @@ documents = [
 ]
 
 merged_docs = []
-merged_docs = documents + documents2
+#merged_docs = documents + documents2
+merged_docs = documents2
 
 db = Chroma.from_documents(merged_docs, embedding_function)
 
@@ -196,7 +202,11 @@ results = db.similarity_search(query)
 
 ### add the model ###
 
-retriever = db.as_retriever(search_type="similarity")
+#retriever = db.as_retriever(search_type="similarity")
+retriever = db.as_retriever(
+    search_type="similarity_score_threshold",
+    search_kwargs={'score_threshold': 0.3}
+)
 
 ## chain based ##
 # template = """Answer the question based only on the following context:
@@ -246,7 +256,7 @@ def _handle_error(error: ToolException) -> str:
     )
 
 class DeviceInput(BaseModel):
-    jsonargs: str = Field(description="""Pass a valid command to a device - {{"id": "value", "command": "value"}}""",default="cmd")
+    jsonargs: str = Field(description="""Pass a valid command to a device - {{"id": "integer_value", "command": "value"}}""",default="cmd")
 #     #deviceid: str = Field(description="should be the identifier of a device from another tool",default="0")
 
 # class DeviceInput(BaseModel):
@@ -259,7 +269,7 @@ def substring_match_command(input_command, valid_commands):
     return None
 
 def SendCommandToIOTDevice(jsonargs: str) -> dict:
-    """Send a command to a specific IoT device by ID. kwargs should match this format {{"id": "value", "command": "value"}}"""
+    """Send a command to a specific IoT device by ID. kwargs should match this format {{"id": "integer_value", "command": "value"}}"""
     #query = int(query)
     #print(deviceid)
     #print(command)
@@ -274,13 +284,14 @@ def SendCommandToIOTDevice(jsonargs: str) -> dict:
     'access_token': '07f4a1a4-ab47-428e-9ef9-0df31e251e58'
     }
     if 'id' or 'device_id' or 'device\_id' in jsonargs.keys():
-        print("yes")
-        print(dir(jsonargs.keys()))
+        #print("yes")
+        #print(dir(jsonargs.keys()))
         jsonargs['id'] = jsonargs[f"{eval(str(jsonargs.keys()).lstrip('dict_keys(').rstrip(')'))[0]}"]
     else:
         raise ToolException('Error: Provided arguments are not correct, please use format: {{"id": "value", "command": "value"}}')
     if 'command' in jsonargs.keys():
-        print("yes")
+        #print("yes")
+        output_save.append(f"command - in keys")
     else:
         raise ToolException('Error: Provided arguments are not correct, please use format: {{"id": "value", "command": "value"}}')
     
@@ -288,26 +299,28 @@ def SendCommandToIOTDevice(jsonargs: str) -> dict:
     command = jsonargs['command']
     response = requests.get(f"http://192.168.2.9/apps/api/106/devices/{deviceid}", params=params)
     available_commands = response.json()['commands']
-    print(available_commands)
+    #print(available_commands)
     match_command = substring_match_command(command, available_commands)
     if match_command:
-        print("Command matched:", match_command)
+        #print("Command matched:", match_command)
         command = match_command
     else:
-        print("Command not valid.")
+        #print("Command not valid.")
+        output_save.append(f"{command} - invalid")
     if command in available_commands:
-        print("Specified command is valid")
+        #print("Specified command is valid")
+        output_save.append(f"{command} - valid")
     else:
         raise ToolException(f"Error: The specified command: {command} is not valid for this device")
     
     response = requests.get(f"http://192.168.2.9/apps/api/106/devices/{deviceid}/{command}", params=params)
-    response = {"action": "sucess"}
+    response = {"action": "success"}
     return response
 
 SendCommand = StructuredTool.from_function(
     func=SendCommandToIOTDevice,
     name="Send Command To IOT Device",
-    description="send a supported command to an IOT device",
+    description="Send a supported command to an IOT device",
     args_schema=DeviceInput,
     return_direct=True,
     handle_tool_error=_handle_error
@@ -417,12 +430,21 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 
 def format_docs(docs):
-    return "\n\n".join(f"Metadata: {doc.metadata}\nContent: {doc.page_content}" for doc in docs)
+    formatted_docs = "\n\n".join(f"Metadata: {doc.metadata}\nContent: {doc.page_content}" for doc in docs)
+    # Print the formatted documents
+    #print("Formatted Documents:")
+    #print(formatted_docs)
+    return formatted_docs
 
 prompt = hub.pull("rlm/rag-prompt")
 prompt.messages[0].prompt.template = """
 You are an assistant for question-answering tasks regarding IoT devices. 
-Use ONLY the retrieved context, particularly focusing on the metadata, to answer the question. 
+Use ONLY the retrieved context, particularly focusing on the metadata, to answer the question.
+
+Hints:
+Determine the on/off state of lights, lamps, and switches by looking at the attribute switch.
+Determine if a thermostat, air conditioner, or furnace is running by lookinag at the thermostatOperatingState.
+
 Keep the answer concise.
 Question: {question} 
 Context: {context} 
@@ -444,16 +466,42 @@ rag_chain = (
 
 
 class Classification(BaseModel):
-    prompt_tag: str = Field(description="Is the text asking for information or asking for an action to be taken?")
+    prompt_tag: str = Field(description="Is the text asking for information or for an action to be taken?")
     
 
+
+# tagging_prompt = ChatPromptTemplate.from_template(
+#     """
+#     You will be provided with a human input. Determine whether the input is asking for information about a device or device(s) or requesting an action to be taken.
+#     Respond in the following JSON format:
+#     {{"prompt_tag": "<information|action>"}}
+    
+#     Human input:
+#     {input}
+#     """
+# )
 
 tagging_prompt = ChatPromptTemplate.from_template(
     """
-    You will be provided with a human input. Determine whether the input is asking for information or requesting an action to be taken.
-    Respond in the following JSON format:
+    You will be provided with a human input. Your task is to classify the input into one of two categories: 
+    1. "information" - when the input is asking for data or status related to a device or device(s).
+    2. "action" - when the input is requesting that an action be taken on a device or device(s).
+    
+    Respond strictly in the following JSON format:
     {{"prompt_tag": "<information|action>"}}
     
+    Here are some examples:
+    
+    Example 1:
+    Human input: "What is the temperature downstairs?"
+    Response: {{"prompt_tag": "information"}}
+    
+    Example 2:
+    Human input: "Turn on the lights in the living room."
+    Response: {{"prompt_tag": "action"}}
+    
+    Now, classify the following input:
+
     Human input:
     {input}
     """
@@ -474,7 +522,7 @@ def classify_input(input_text):
         classification_result = json.loads(result)['prompt_tag']
     except (json.JSONDecodeError, KeyError) as e:
         raise ValueError("Failed to parse the classification result.") from e
-    
+    #print(classification_result)
     return classification_result
 
 # Step 2: Define the chain that handles questions
@@ -485,6 +533,8 @@ def handle_question_chain():
         | StrOutputParser()
     )
     result = chain.invoke(f"{args.question}")
+    #documents_used = result["documents"]
+    #print(documents_used)
     return result
 
 # Step 3: Define the agent executor for actions
@@ -495,7 +545,8 @@ def handle_action_chain():
         | StrOutputParser()
     )
     chain_result = chain.invoke(f"{args.question}")
-    print(chain_result)
+    #print(chain)
+    #print(chain_result)
     try:
         result = agent_executor.invoke({"input": f"{chain_result}"})
     except Exception as e:
@@ -510,11 +561,13 @@ def lcel_chain(input_text):
     input_type = classify_input(input_text)
     
     # Step 4b: Execute the appropriate chain based on the classification
-    if input_type == '<information>':
-        print("Selected information chain")
+    if input_type == '<information>' or input_type == 'information':
+        #print("Selected information chain")
+        output_save.append("Selected information chain")
         return handle_question_chain()
-    elif input_type == '<action>':
-        print("Selected action chain")
+    elif input_type == '<action>'or input_type == 'action':
+        #print("Selected action chain")
+        output_save.append("Selected action chain")
         return handle_action_chain()
     else:
         return "Unable to classify input. Please try again."
