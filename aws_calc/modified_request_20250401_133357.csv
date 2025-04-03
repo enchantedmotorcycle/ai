@@ -1,0 +1,3 @@
+ATM ID,Site,ENV,Zone,vCPU,RAM GB,DB Type,Storage GB,Raw JSON,AWS Instance Type,AWS Hourly Cost,AWS Monthly Cost
+AA00001527,ASX1,DEV,OZ,8,48,MSSQL,3500,"{'Instance Type': 'r7a.4xlarge', 'vCPU': '16', 'Memory': '288 GiB', 'PricePerUnit': '1.2172'}",r7a.4xlarge,1.2172,888.556
+AA00003081,ASX1,PRD,CPZ,16,96,MSSQL,9000,"{'Instance Type': 'r6i.12xlarge', 'vCPU': '16', 'Memory': '118', 'PricePerUnit': '3.5424'}",r6i.12xlarge,3.5424,2585.952

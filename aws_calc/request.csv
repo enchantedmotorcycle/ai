@@ -1,0 +1,3 @@
+"ATM ID","Site","ENV","Zone","vCPU","RAM GB","DB Type","Storage GB"
+"AA00001527","ASX1","DEV","OZ","8","48","MSSQL","3500"
+"AA00003081","ASX1","PRD","CPZ","16","96","MSSQL","9000"
