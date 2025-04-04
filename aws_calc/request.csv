@@ -1,3 +1,5 @@
 "ATM ID","Site","ENV","Zone","vCPU","RAM GB","DB Type","Storage GB"
 "AA00001527","ASX1","DEV","OZ","8","48","MSSQL","3500"
 "AA00003081","ASX1","PRD","CPZ","16","96","MSSQL","9000"
+"AA00002512","SJX1","ATN","SNP","4","53","MSSQL","3610"
+"AA00004362","SJX1","ATN","SNP","8","64","MSSQL","5610"
